@@ -103,6 +103,14 @@ def _truncate(value: float, places: int) -> float:
     return math.floor(value * factor + 1e-9) / factor
 
 
+def _round_half_up(value: float) -> int:
+    """EPA rounds the index to the nearest whole number, halves up (its own
+    worked example: 8-hour ozone at 0.078 ppm is 125.5, so 126). Python's
+    round() sends halves to the even neighbour (104.5 -> 104), and float error
+    can land a true .5 a hair under it, hence the epsilon."""
+    return math.floor(value + 0.5 + 1e-9)
+
+
 def sub_index(table: str, concentration: float | None) -> int | None:
     """The AQI sub-index for one pollutant, or None when it can't be rated."""
     if concentration is None or math.isnan(concentration):
@@ -113,17 +121,23 @@ def sub_index(table: str, concentration: float | None) -> int | None:
         return None  # below a table's floor (only the 1-hour ozone table)
     for c_lo, c_hi, i_lo, i_hi in bands:
         if c_lo <= c <= c_hi:
-            return round((i_hi - i_lo) / (c_hi - c_lo) * (c - c_lo) + i_lo)
+            return _round_half_up((i_hi - i_lo) / (c_hi - c_lo) * (c - c_lo) + i_lo)
     return 500  # beyond the top of the scale
 
 
-def rolling_mean(values: Sequence[float], hours: int) -> list[float]:
-    """Trailing mean over the last `hours` values (NaNs skipped)."""
+def rolling_mean(values: Sequence[float], hours: int, min_count: int = 1) -> list[float]:
+    """Trailing mean over the last `hours` values (NaNs skipped), or NaN when
+    fewer than `min_count` of them are real."""
     out: list[float] = []
     for i in range(len(values)):
         window = [v for v in values[max(0, i - hours + 1) : i + 1] if not math.isnan(v)]
-        out.append(sum(window) / len(window) if window else math.nan)
+        out.append(sum(window) / len(window) if len(window) >= max(min_count, 1) else math.nan)
     return out
+
+
+# EPA's completeness rule: an average stands only on 75% of its hours.
+_COMPLETE_24H = 18
+_COMPLETE_8H = 6
 
 
 def us_aqi_series(
@@ -137,16 +151,23 @@ def us_aqi_series(
     """Hourly US AQI from hourly ug/m3 series, all on the same time axis.
 
     PM uses 24-hour trailing means, ozone and CO 8-hour means, NO2 and SO2
-    the hourly value; the index is the worst sub-index (EPA's rule).
+    the hourly value; the index is the worst sub-index (EPA's rule). An
+    average needs 75% of its hours, and an hour whose PM2.5 day isn't
+    complete gets no index at all: PM2.5 (Saharan dust) drives la isla's
+    AQI, and an index from the gases alone would read clean in a dust event.
     """
-    pm25_24 = rolling_mean(pm25, 24)
-    pm10_24 = rolling_mean(pm10, 24)
-    o3_8 = rolling_mean(o3, 8)
-    co_8 = rolling_mean(co, 8)
+    pm25_24 = rolling_mean(pm25, 24, _COMPLETE_24H)
+    pm10_24 = rolling_mean(pm10, 24, _COMPLETE_24H)
+    o3_8 = rolling_mean(o3, 8, _COMPLETE_8H)
+    co_8 = rolling_mean(co, 8, _COMPLETE_8H)
     out: list[int | None] = []
     for i in range(len(pm25)):
+        pm25_index = sub_index("pm25_24h", pm25_24[i])
+        if pm25_index is None:
+            out.append(None)
+            continue
         indices: Iterable[int | None] = (
-            sub_index("pm25_24h", pm25_24[i]),
+            pm25_index,
             sub_index("pm10_24h", pm10_24[i]),
             _ozone_index(o3_8[i], o3[i]),
             sub_index("no2_1h", _ppb(no2[i], "no2")),

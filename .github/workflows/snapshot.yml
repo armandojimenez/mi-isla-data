@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # Lets the job re-enable its own schedule (see "Keep the schedule on").
+  actions: write
 
 concurrency:
   group: snapshot
@@ -39,12 +41,25 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      # The files live now, so a domain whose build fails keeps its file even
+      # if the public URL is unreachable from the runner.
+      - name: Previous site
+        run: |
+          mkdir -p previous/v1
+          if git fetch -q --depth=1 origin gh-pages; then
+            for kind in air marine; do
+              git show "FETCH_HEAD:v1/$kind.json" > "previous/v1/$kind.json" 2>/dev/null \
+                || rm -f "previous/v1/$kind.json"
+            done
+          fi
+
+      # Fails (and so publishes nothing) if a file could be neither rebuilt
+      # nor kept: a run never takes a published file down.
       - name: Build
-        run: python -m snapshot.build --out site
+        run: python -m snapshot.build --out site --previous previous
 
       # The site branch is rebuilt as a single commit each run, so history
-      # never grows, and each push keeps the repository active (GitHub
-      # pauses scheduled workflows in repositories idle for 60 days).
+      # never grows.
       - name: Publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,3 +73,17 @@ jobs:
               commit -q -m "Snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -q --force \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
+      # GitHub pauses the scheduled runs of a public repository after 60 days
+      # without activity and doesn't define activity, so this job's pushes to
+      # gh-pages may not count. Re-enabling the workflow (the documented
+      # `gh workflow enable`; a no-op while it's on) is what keepalive tools
+      # use to restart that clock without dummy commits. If GitHub pauses it
+      # anyway, the app marks the data stale after 10 hours and one click on
+      # "Enable workflow" in the Actions tab brings it back.
+      - name: Keep the schedule on
+        if: github.event_name != 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow enable snapshot.yml --repo "$GITHUB_REPOSITORY"

@@ -11,9 +11,16 @@ output, keeps only Puerto Rico, and publishes it to GitHub Pages:
 | [`v1/status.json`](https://armandojimenez.dev/mi-isla-data/v1/status.json) | Which model run each file came from, and whether the last build worked | | every run |
 
 There is no server and no API key: the job runs every three hours, and the files
-are static. If a model run is missing or looks wrong, that file keeps its last
-good version (its `generatedAt` says how old it is), so a bad run never blanks
-the app.
+are static. If a model run is missing, looks wrong, or is too old (CAMS over 30
+hours, GFS-Wave over 18: the feed has stalled), that file keeps its last good
+version, and its `generatedAt` keeps saying how old it is, so a bad run never
+blanks the app and an aging forecast never looks new. If a file can be neither
+rebuilt nor kept, the run publishes nothing, so a run never takes a file down.
+
+GitHub pauses scheduled workflows in public repositories after 60 days without
+activity. Each run re-enables its own workflow to keep the schedule going; if it
+ever stops anyway, **Actions → Snapshot → Enable workflow** restarts it (the app
+marks air and wave data stale after 10 hours, so it shows).
 
 ## Format
 
@@ -23,8 +30,9 @@ Every file carries `v` (schema version), `kind`, `generatedAt`, the model `run`,
 
 - **air**: `cells` on CAMS's 0.4° grid over la isla (`lat`, `lon`), each with
   `aqi` (US EPA, 2024 breakpoints: PM 24-hour means, ozone and CO 8-hour means,
-  NO₂ and SO₂ hourly) and `pm25`, `pm10`, `o3`, `no2`, `dust` in µg/m³. Read the
-  cell nearest to a point.
+  NO₂ and SO₂ hourly; an average needs 75% of its hours, the index rounds halves
+  up, and an hour without a complete PM2.5 day has no index) and `pm25`,
+  `pm10`, `o3`, `no2`, `dust` in µg/m³. Read the cell nearest to a point.
 - **marine**: `spots` (`id`, `lat`, `lon`, plus the wet grid cell used), each
   with `waveHeight`, `waveDirection`, `wavePeriod`, and the same three for
   `windWave`, `swell` and `secondarySwell`. Heights in metres, periods in

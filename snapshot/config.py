@@ -31,6 +31,12 @@ AIR_LONS = (-67.2, -65.2)
 # Hours of history kept before "now" (the app draws a 24-hour AQI trend).
 AIR_PAST_HOURS = 25
 
+# The oldest CAMS run worth publishing. Runs land twice a day about ten hours
+# late, so the newest is normally 10 to 25 hours old; past this the model feed
+# has stalled, and the last good file (with its honest, aging `generatedAt`)
+# stays up instead of an old forecast passing as new.
+AIR_MAX_RUN_AGE_HOURS = 30
+
 # --- Waves (NOAA GFS-Wave, 1/6 degree Atlantic grid). ---
 
 MARINE_MODEL = "ncep_gfswave016"
@@ -80,6 +86,10 @@ MARINE_MAX_CELL_KM = 30.0
 # Hours kept around "now": a little history, then three days ahead.
 MARINE_PAST_HOURS = 3
 MARINE_AHEAD_HOURS = 72
+
+# The oldest GFS-Wave run worth publishing (four runs a day, normally 5 to 14
+# hours old when the job runs); see AIR_MAX_RUN_AGE_HOURS.
+MARINE_MAX_RUN_AGE_HOURS = 18
 
 ATTRIBUTION = {
     "air": (

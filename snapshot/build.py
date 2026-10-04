@@ -2,7 +2,9 @@
 
 Run `python -m snapshot.build --out site`. Each domain is built, checked,
 and written to `site/v1/<domain>.json`. A domain that fails keeps serving
-its last published file, so one bad model run never blanks the app.
+its last published file, so one bad model run never blanks the app; if that
+file can't be kept either, the build fails and nothing is published, so a
+run never takes a file down.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import shutil
 import sys
 import urllib.request
 from pathlib import Path
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -52,6 +55,7 @@ def build_air(fs, now: dt.datetime) -> dict:
     if not runs:
         raise SnapshotError("no complete CAMS run in the last three days")
     latest = runs[0]
+    _check_run_age(latest, now, config.AIR_MAX_RUN_AGE_HOURS)
     # A run from a day earlier supplies the past hours (the AQI trend and the
     # 24-hour PM averages need them); fall back to any older run.
     history = next(
@@ -145,6 +149,7 @@ def build_marine(fs, now: dt.datetime) -> dict:
     run = next(complete_runs(fs, config.MARINE_MODEL, variables, now), None)
     if run is None:
         raise SnapshotError("no complete GFS-Wave run in the last three days")
+    _check_run_age(run, now, config.MARINE_MAX_RUN_AGE_HOURS)
     log.info("marine: run %s", run.label)
 
     fields = {
@@ -249,6 +254,18 @@ def _wet_cell(field: Field, lat: float, lon: float, axis: np.ndarray) -> tuple[i
 # --- Shared checks. ---
 
 
+def _check_run_age(run: Run, now: dt.datetime, max_hours: int) -> None:
+    """Refuse a run the model feed should have replaced by now: its forecast
+    is aging, and a fresh `generatedAt` on it would hide that from the app."""
+    age = now - run.reference
+    if age > dt.timedelta(hours=max_hours):
+        hours = age.total_seconds() / 3600
+        raise SnapshotError(
+            f"{run.model}: newest complete run {run.label} is {hours:.0f} h old "
+            f"(over {max_hours} h)"
+        )
+
+
 def _same_box(fields: list[Field]) -> None:
     first = fields[0]
     for field in fields[1:]:
@@ -291,29 +308,83 @@ def write_json(path: Path, doc: dict) -> None:
     path.write_text(json.dumps(doc, separators=(",", ":"), ensure_ascii=True), encoding="utf-8")
 
 
-def keep_live_copy(kind: str, target: Path) -> bool:
-    """Re-publish the file that's live now, so a failed build changes nothing."""
-    url = f"{config.PUBLIC_BASE}v1/{kind}.json"
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "mi-isla-data"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read()
-        doc = json.loads(body)
-        if doc.get("kind") != kind or doc.get("v") != SCHEMA_VERSION:
-            return False
-    except Exception as error:  # noqa: BLE001 - any failure means "nothing to keep"
-        log.warning("%s: no live copy to keep (%s)", kind, error)
-        return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(body)
-    return True
+def keep_previous(kind: str, target: Path, previous: Path | None) -> bool:
+    """Re-publish the file that's live now, so a failed build changes nothing.
+
+    The copy comes from `previous` (the site branch, checked out by the
+    workflow) when it has one, else from the public URL.
+    """
+    candidates: list[tuple[str, bytes]] = []
+    if previous is not None:
+        local = previous / "v1" / f"{kind}.json"
+        if local.is_file():
+            candidates.append((str(local), local.read_bytes()))
+    if not candidates:
+        url = f"{config.PUBLIC_BASE}v1/{kind}.json"
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "mi-isla-data"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                candidates.append((url, response.read()))
+        except Exception as error:  # noqa: BLE001 - any failure means "nothing to keep"
+            log.warning("%s: no live copy to keep (%s)", kind, error)
+    for where, body in candidates:
+        try:
+            doc = json.loads(body)
+        except ValueError:
+            continue
+        if doc.get("kind") == kind and doc.get("v") == SCHEMA_VERSION:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+            log.info("%s: kept the published file (%s)", kind, where)
+            return True
+    return False
+
+
+Domain = tuple[str, Callable[[Any, dt.datetime], dict], Callable[[dict, dt.datetime], None]]
+
+
+def publish(
+    fs,
+    out: Path,
+    now: dt.datetime,
+    domains: Sequence[Domain],
+    previous: Path | None = None,
+    only: str | None = None,
+) -> tuple[dict, list[str]]:
+    """Build every domain into `out`. Returns the status document and the
+    domains left with no file at all (neither a new nor a kept one)."""
+    status: dict = {"generatedAt": iso(now), "domains": {}}
+    missing: list[str] = []
+    for kind, build, validate in domains:
+        target = out / "v1" / f"{kind}.json"
+        if only and kind != only:
+            # Not rebuilt this time: carry the published file over as is.
+            if not keep_previous(kind, target, previous):
+                missing.append(kind)
+            continue
+        try:
+            doc = build(fs, now)
+            validate(doc, now)
+            write_json(target, doc)
+            status["domains"][kind] = {"ok": True, "run": doc["run"]}
+            log.info("%s: published (%d bytes)", kind, target.stat().st_size)
+        except Exception as error:  # noqa: BLE001 - one domain must not sink the other
+            log.exception("%s: build failed", kind)
+            kept = keep_previous(kind, target, previous)
+            status["domains"][kind] = {"ok": False, "error": str(error)[:300], "kept": kept}
+            if not kept:
+                missing.append(kind)
+    return status, missing
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="site", help="output directory")
     parser.add_argument("--now", help="pretend it is this UTC time (ISO 8601)")
-    parser.add_argument("--only", choices=("air", "marine"), help="build one domain")
+    parser.add_argument("--only", choices=("air", "marine"), help="rebuild one domain")
+    parser.add_argument(
+        "--previous", help="the currently published site (a domain that fails keeps its file)"
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -327,30 +398,22 @@ def main(argv: list[str] | None = None) -> int:
 
     fs = fsspec.filesystem("s3", anon=True)
     out = Path(args.out)
-    domains = (("air", build_air, validate_air), ("marine", build_marine, validate_marine))
-    status: dict = {"generatedAt": iso(now), "domains": {}}
-    published = 0
-    for kind, build, validate in domains:
-        if args.only and kind != args.only:
-            continue
-        target = out / "v1" / f"{kind}.json"
-        try:
-            doc = build(fs, now)
-            validate(doc, now)
-            write_json(target, doc)
-            status["domains"][kind] = {"ok": True, "run": doc["run"]}
-            published += 1
-            log.info("%s: published (%d bytes)", kind, target.stat().st_size)
-        except Exception as error:  # noqa: BLE001 - one domain must not sink the other
-            log.exception("%s: build failed", kind)
-            kept = keep_live_copy(kind, target)
-            status["domains"][kind] = {"ok": False, "error": str(error)[:300], "kept": kept}
-            published += int(kept)
+    domains: list[Domain] = [
+        ("air", build_air, validate_air),
+        ("marine", build_marine, validate_marine),
+    ]
+    previous = Path(args.previous) if args.previous else None
+    status, missing = publish(fs, out, now, domains, previous=previous, only=args.only)
+    if missing:
+        # Publishing now would take these files down for every reader. Fail
+        # instead: the site stays exactly as it is until a run can fill them.
+        log.error("not publishing: no file for %s", ", ".join(missing))
+        return 1
 
     write_json(out / "v1" / "status.json", status)
     if STATIC_DIR.is_dir():
         shutil.copytree(STATIC_DIR, out, dirs_exist_ok=True)
-    return 0 if published else 1
+    return 0
 
 
 if __name__ == "__main__":
