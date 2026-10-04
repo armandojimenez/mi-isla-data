@@ -1,0 +1,60 @@
+name: Snapshot
+
+on:
+  schedule:
+    # Every three hours, off the top of the hour (GitHub delays :00 runs most).
+    # CAMS lands twice a day and GFS-Wave four times; this catches each run.
+    - cron: "41 */3 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "snapshot/**"
+      - "static/**"
+      - "requirements.txt"
+      - ".github/workflows/snapshot.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt pytest
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build
+        run: python -m snapshot.build --out site
+
+      # The site branch is rebuilt as a single commit each run, so history
+      # never grows, and each push keeps the repository active (GitHub
+      # pauses scheduled workflows in repositories idle for 60 days).
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd site
+          touch .nojekyll
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
