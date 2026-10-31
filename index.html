@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mi Isla · datos</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { color-scheme: light dark; --ink: #1d2433; --muted: #5c6580; --line: #d9dde6; --bg: #f7f5f0; --accent: #c8102e; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #e8ebf2; --muted: #8e9bb4; --line: #2a3347; --bg: #121722; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.25rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+  h1 span { color: var(--accent); }
+  p { color: var(--muted); margin: .25rem 0 1.5rem; }
+  ul { list-style: none; padding: 0; margin: 0 0 2rem; border-top: 1px solid var(--line); }
+  li { padding: .8rem 0; border-bottom: 1px solid var(--line); }
+  a { color: inherit; font-weight: 600; }
+  small { display: block; color: var(--muted); }
+  footer { font-size: .85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mi Isla <span>·</span> datos</h1>
+  <p>Archivos pequeños con el aire, el polvo del Sahara y el mar de Puerto Rico, al día cada tres horas para la app Mi Isla.</p>
+  <ul>
+    <li><a href="v1/air.json">v1/air.json</a><small>Calidad del aire y polvo del Sahara · CAMS</small></li>
+    <li><a href="v1/marine.json">v1/marine.json</a><small>Olas y marejadas en 16 playas · NOAA GFS-Wave</small></li>
+    <li><a href="v1/status.json">v1/status.json</a><small>De qué corrida viene cada archivo</small></li>
+  </ul>
+  <footer>
+    Contains modified Copernicus Atmosphere Monitoring Service information. Waves: NOAA GFS-Wave.
+    Read from <a href="https://open-meteo.com/">Open-Meteo.com</a> open data (CC BY 4.0).
+    <a href="https://github.com/armandojimenez/mi-isla-data">Código</a>.
+  </footer>
+</main>
+</body>
+</html>
